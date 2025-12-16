@@ -1,0 +1,16 @@
+---
+- name: Probando Ansible
+  hosts: docker
+  tasks:
+    - name: Probando mi conexion
+      ping:
+
+    - name: Actualizar repos
+      become: true
+      apt:
+        update-cache: true
+
+    - name: Instalar curl
+      become: true
+      apt:
+        name: curl
