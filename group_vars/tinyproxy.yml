@@ -1,0 +1,5 @@
+---
+# Variables específicas para el grupo tinyproxy
+ansible_user: uclv
+ansible_become: yes
+# La contraseña se solicita interactivamente con -K

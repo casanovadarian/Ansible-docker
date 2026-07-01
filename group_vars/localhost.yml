@@ -1,0 +1,6 @@
+---
+# Variables específicas para localhost
+ansible_connection: local
+ansible_user: "{{ ansible_user_local | default(lookup('env', 'USER')) }}"
+ansible_become: yes
+# La contraseña se solicita interactivamente con -K

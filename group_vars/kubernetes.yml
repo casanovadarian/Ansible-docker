@@ -1,0 +1,5 @@
+---
+# Variables específicas para el grupo kubernetes
+ansible_user: uclv
+ansible_become: yes
+# La contraseña se solicita interactivamente con -K

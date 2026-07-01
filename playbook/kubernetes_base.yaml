@@ -1,0 +1,35 @@
+---
+- name: Incluir base para Kubernetes
+  import_playbook: actualizacion_repos_uclv.yaml
+  vars:
+    target_hosts: kubernetes
+
+#- name: Instalar y configurar TinyProxy
+#  import_playbook: montarTinyProxy.yml
+#  vars:
+#    target_hosts: kubernetes
+
+#- name: Prueba de conectividad a través del proxy
+#  hosts: kubernetes
+#  gather_facts: no
+#  tasks:
+#    - name: Ping a google.com con proxy
+#      shell: |
+#        source /etc/profile.d/tinyproxy_proxy.sh 2>/dev/null || true
+#        ping -c 4 google.com
+##      register: ping_result
+ #     changed_when: false
+
+#    - name: Mostrar resultado del ping
+#      debug:
+#        msg: |
+#          ===== Resultado ping en {{ inventory_hostname }} =====
+#          {{ ping_result.stdout }}
+#      when: ping_result.stdout is defined
+
+#    - name: Mostrar error si existe
+#      debug:
+#        msg: |
+#          ===== Error en {{ inventory_hostname }} =====
+#          {{ ping_result.stderr }}
+#      when: ping_result.stderr is defined and ping_result.stderr != ""

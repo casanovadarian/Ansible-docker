@@ -1,6 +1,6 @@
 ---
 - name: Preparación del Servidor e Instalación de Docker
-  hosts: proxmox  # O el grupo de hosts donde quieres ejecutar esto (ej: hosts: webservers)
+  hosts: docker
   become: yes # Permite que Ansible ejecute las tareas con privilegios de sudo
 
   tasks:
@@ -50,23 +50,16 @@
         state: directory
         mode: '0755'      
 
-    - name: 4b. Descargar la clave GPG de Docker (Mirror UCLV) y desarmarla
-      ansible.builtin.shell: |
-        curl -fsSL https://repos.uclv.edu.cu/docker-ce/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-      args:
-        # Esto asegura que la tarea solo se ejecute si el archivo no existe
-        creates: /etc/apt/keyrings/docker.gpg
+    - name: 4b. Importar la clave GPG de Docker al keyring de APT
+      ansible.builtin.apt_key:
+        url: https://repos.uclv.edu.cu/docker-ce/linux/ubuntu/gpg
+        keyring: /etc/apt/keyrings/docker.gpg
+        state: present
 
-    - name: 4c. Establecer permisos de lectura (a+r) en la clave GPG
-      ansible.builtin.file:
-        path: /etc/apt/keyrings/docker.gpg
-        mode: a+r
-        
     - name: 5. Agregar el repositorio de Docker al sistema de APT (usando signed-by y mirror de UCLV)
       ansible.builtin.apt_repository:
-        repo: deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://repos.uclv.edu.cu/docker-ce/linux/ubuntu {{ ansible_facts['distribution_release'] }} stable
+        repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://repos.uclv.edu.cu/docker-ce/linux/ubuntu {{ ansible_facts['distribution_release'] }} stable"
         state: present
-        # Le damos un nombre específico al archivo de lista para evitar conflictos
         filename: docker
 
     - name: 5b. Forzar la actualización del índice de APT después de agregar el repositorio

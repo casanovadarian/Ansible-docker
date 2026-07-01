@@ -1,0 +1,36 @@
+---
+- name: Preparación del Servidor
+  hosts: "{{ target_hosts | default('all') }}"
+  become: yes # Permite que Ansible ejecute las tareas con privilegios de sudo
+
+  tasks:
+
+    - name: Modificar ubuntu.sources
+      ansible.builtin.copy:
+        content: |
+          Types: deb
+          Suites: noble noble-updates noble-backports
+          Components: main restricted universe multiverse
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          URIs: http://repos.uclv.edu.cu/ubuntu/
+
+          Types: deb
+          Suites: noble-security
+          Components: main restricted universe multiverse
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          URIs: http://repos.uclv.edu.cu/ubuntu/
+
+        dest: /etc/apt/sources.list.d/ubuntu.sources
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: 1. Actualizar caché de paquetes (apt update)
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600 # Opcional: mantiene el caché válido por 1 hora
+
+    - name: 2. Actualizar todos los paquetes instalados (apt upgrade -y)
+      ansible.builtin.apt:
+        upgrade: dist
+        autoremove: yes

@@ -1,0 +1,185 @@
+---
+- name: Instalar y configurar tinyproxy en máquina local
+  hosts: localhost
+  become: yes
+  vars_prompt:
+    - name: local_become_pass
+      prompt: "Contraseña sudo para localhost"
+      private: yes
+  vars:
+    ansible_become_pass: "{{ local_become_pass }}"
+    tinyproxy_port: 8888
+  tasks:
+    - name: Actualizar repositorios
+      apt:
+        update_cache: yes
+
+    - name: Instalar tinyproxy
+      apt:
+        name: tinyproxy
+        state: present
+
+    - name: Configurar Bind en tinyproxy.conf
+      lineinfile:
+        path: /etc/tinyproxy/tinyproxy.conf
+        regexp: "^Bind"
+        line: "Bind 0.0.0.0"
+        state: present
+      notify: Reiniciar tinyproxy
+
+    - name: Configurar Port en tinyproxy.conf
+      lineinfile:
+        path: /etc/tinyproxy/tinyproxy.conf
+        regexp: "^Port"
+        line: "Port {{ tinyproxy_port }}"
+        state: present
+      notify: Reiniciar tinyproxy
+
+    - name: Permitir CONNECT a HTTPS en tinyproxy.conf
+      lineinfile:
+        path: /etc/tinyproxy/tinyproxy.conf
+        regexp: '^ConnectPort[[:space:]]+443$'
+        line: 'ConnectPort 443'
+        insertafter: '^Port'
+        state: present
+      notify: Reiniciar tinyproxy
+
+    - name: Asegurar Allow localhost en tinyproxy.conf
+      lineinfile:
+        path: /etc/tinyproxy/tinyproxy.conf
+        regexp: '^Allow[[:space:]]+127\.0\.0\.1$'
+        line: 'Allow 127.0.0.1'
+        state: present
+      notify: Reiniciar tinyproxy
+
+    - name: Asegurar Allow IPv6 localhost en tinyproxy.conf
+      lineinfile:
+        path: /etc/tinyproxy/tinyproxy.conf
+        regexp: '^Allow[[:space:]]+::1$'
+        line: 'Allow ::1'
+        state: present
+      notify: Reiniciar tinyproxy
+
+    - name: Asegurar Allow para clientes tinyproxy en tinyproxy.conf
+      lineinfile:
+        path: /etc/tinyproxy/tinyproxy.conf
+        regexp: '^Allow[[:space:]]+{{ item | regex_escape }}$'
+        line: 'Allow {{ item }}'
+        state: present
+      loop: "{{ groups.get(target_hosts | default('tinyproxy'), []) }}"
+      notify: Reiniciar tinyproxy
+
+    - name: Permitir tráfico UFW desde IPs tinyproxy al puerto {{ tinyproxy_port }}
+      ufw:
+        rule: allow
+        from_ip: "{{ item }}"
+        to_port: '{{ tinyproxy_port }}'
+        proto: tcp
+      loop: "{{ groups.get(target_hosts | default('tinyproxy'), []) }}"
+      when: lookup('pipe', 'command -v ufw 2>/dev/null || true') != ''
+
+    - name: Eliminar reglas UFW antiguas para puerto {{ tinyproxy_port }}
+      shell: |
+        current_ips="{{ groups.get(target_hosts | default('tinyproxy'), []) | join(' ') }}"
+        port={{ tinyproxy_port }}
+        while IFS= read -r line; do
+          src=$(echo "$line" | awk '{print $3}')
+          if ! grep -qw "$src" <<< "$current_ips"; then
+            ufw delete allow from "$src" to any port "$port" proto tcp || true
+          fi
+        done < <(ufw status | grep "${port}/tcp" || true)
+      args:
+        executable: /bin/bash
+      when: lookup('pipe', 'command -v ufw 2>/dev/null || true') != ''
+
+    - name: Permitir tráfico iptables desde IPs tinyproxy al puerto {{ tinyproxy_port }}
+      iptables:
+        chain: INPUT
+        protocol: tcp
+        source: "{{ item }}"
+        destination_port: '{{ tinyproxy_port }}'
+        jump: ACCEPT
+        state: present
+      loop: "{{ groups.get(target_hosts | default('tinyproxy'), []) }}"
+      when: lookup('pipe', 'command -v iptables 2>/dev/null || true') != ''
+
+    - name: Eliminar reglas iptables antiguas para puerto {{ tinyproxy_port }}
+      shell: |
+        current_ips="{{ groups.get(target_hosts | default('tinyproxy'), []) | join(' ') }}"
+        port={{ tinyproxy_port }}
+        while read -r src; do
+          if ! grep -qw "$src" <<< "$current_ips"; then
+            iptables -D INPUT -p tcp -s "$src" --dport "$port" -j ACCEPT || true
+          fi
+        done < <(iptables -S INPUT | awk '/-p tcp/ && /--dport/ && /-s/ {for(i=1;i<=NF;i++){ if($i=="-s") print $(i+1)}}')
+      args:
+        executable: /bin/bash
+      when: lookup('pipe', 'command -v iptables 2>/dev/null || true') != ''
+
+    - name: Habilitar e iniciar tinyproxy
+      systemd:
+        name: tinyproxy
+        enabled: yes
+        state: started
+
+    - name: Exponer tinyproxy_port y tinyproxy_host a hostvars para otros plays
+      set_fact:
+        tinyproxy_port: "{{ tinyproxy_port }}"
+        tinyproxy_host: "{{ (ansible_all_ipv4_addresses | select('match', '^10\\.12\\.') | list | first) | default(ansible_default_ipv4.address) }}"
+
+  handlers:
+    - name: Reiniciar tinyproxy
+      systemd:
+        name: tinyproxy
+        state: restarted
+
+- name: Configurar proxy en VPS del grupo tinyproxy
+  hosts: "{{ target_hosts | default('tinyproxy') }}"
+  #hosts: tinyproxy
+  become: yes
+  vars_prompt:
+    - name: remote_become_pass
+      prompt: "Contraseña sudo para los hosts tinyproxy"
+      private: yes
+  vars:
+    ansible_become_pass: "{{ remote_become_pass }}"
+    proxy_host: "{{ hostvars['localhost'].tinyproxy_host | default(hostvars['localhost']['ansible_default_ipv4']['address']) }}"
+    proxy_port: "{{ hostvars['localhost'].tinyproxy_port }}"
+  tasks:
+    - name: Crear archivo de configuración de proxy en /etc/profile.d
+      copy:
+        dest: /etc/profile.d/tinyproxy_proxy.sh
+        content: |
+          export http_proxy="http://{{ proxy_host }}:{{ proxy_port }}"
+          export https_proxy="http://{{ proxy_host }}:{{ proxy_port }}"
+          export no_proxy="localhost,127.0.0.1,10.12.0.0/16,*.uclv.cu,*.uclv.edu.cu,repos.uclv.edu.cu"
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Configurar APT para usar el proxy y mantener mirrors UCLV directos
+      copy:
+        dest: /etc/apt/apt.conf.d/99proxy
+        content: |
+          Acquire::http::Proxy "http://{{ proxy_host }}:{{ proxy_port }}";
+          Acquire::https::Proxy "http://{{ proxy_host }}:{{ proxy_port }}";
+
+          # Excluir el mirror local de la UCLV (para que vaya directo)
+          Acquire::http::Proxy::repos.uclv.edu.cu "DIRECT";
+          Acquire::https::Proxy::repos.uclv.edu.cu "DIRECT";
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Probar curl hacia registry.k8s.io/v2 usando el proxy
+      shell: |
+        source /etc/profile.d/tinyproxy_proxy.sh
+        curl -I https://registry.k8s.io/v2/
+      args:
+        executable: /bin/bash
+      register: curl_registry_check
+      changed_when: false
+
+    - name: Mostrar resultado de la prueba curl
+      debug:
+        var: curl_registry_check.stdout_lines
