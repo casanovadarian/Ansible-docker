@@ -48,13 +48,13 @@
         replace: '#\1'
 
 
-    - name: Cargar módulos del kernel overlay y br_netfilter
-      community.general.modprobe:
-        name: "{{ item }}"
-        state: present
-      loop:
-        - overlay
-        - br_netfilter
+    - name: Persistir módulos del kernel
+      copy:
+        dest: /etc/modules-load.d/kubernetes.conf
+        content: |
+          overlay
+          br_netfilter
+        mode: '0644'
 
     - name: Crear configuración de sysctl para Kubernetes
       copy:
@@ -75,22 +75,21 @@
         state: directory
         mode: '0755'
 
-    - name: Importar clave GPG de Docker
-      get_url:
-        url: https://download.docker.com/linux/ubuntu/gpg
-        dest: /tmp/docker.gpg
-        mode: '0644'
-
-    - name: Desarmar clave GPG de Docker
-      command: gpg --dearmor -o /etc/apt/keyrings/docker.gpg /tmp/docker.gpg
-      args:
-        creates: /etc/apt/keyrings/docker.gpg
-
-    - name: Añadir repositorio APT de Docker
-      apt_repository:
-        repo: "deb [arch={{ docker_arch_map[ansible_architecture] }} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
-        filename: docker
+    - name: Importar la clave GPG de Docker al keyring de APT UCLV
+      ansible.builtin.apt_key:
+        url: https://repos.uclv.edu.cu/docker-ce/linux/ubuntu/gpg
+        keyring: /etc/apt/keyrings/docker.gpg
         state: present
+
+    - name: 5. Agregar el repositorio de Docker al sistema de APT (usando signed-by y mirror de UCLV)
+      ansible.builtin.apt_repository:
+        repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://repos.uclv.edu.cu/docker-ce/linux/ubuntu {{ ansible_facts['distribution_release'] }} stable"
+        state: present
+        filename: docker
+
+    - name: Forzar la actualización del índice de APT después de agregar el repositorio
+      ansible.builtin.apt:
+        update_cache: yes
 
     - name: Instalar containerd.io
       apt:
@@ -135,17 +134,20 @@
         state: restarted
         enabled: true
 
-    - name: Crear directorio para keyrings de Kubernetes
-      file:
-        path: /etc/apt/keyrings
-        state: directory
-        mode: '0755'
+#    - name: Crear directorio para keyrings de Kubernetes
+#      file:
+#        path: /etc/apt/keyrings
+#        state: directory
+#        mode: '0755'
 
     - name: Importar clave GPG de Kubernetes
       get_url:
         url: https://pkgs.k8s.io/core:/stable:/v1.33/deb/Release.key
         dest: /tmp/kubernetes-release.key
         mode: '0644'
+      environment:
+        HTTP_PROXY: "http://{{ proxy_host }}:{{ proxy_port }}"
+        HTTPS_PROXY: "http://{{ proxy_host }}:{{ proxy_port }}"
 
     - name: Desarmar clave GPG de Kubernetes
       command: gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg /tmp/kubernetes-release.key
@@ -176,9 +178,19 @@
       command: apt-mark hold kubelet kubeadm kubectl
       changed_when: true
 
-    - name: PASO 10 - Añadir entrada de hosts para el nodo maestro
+    - name: Habilitarkubelet
+      systemd:
+        name: kubelet
+        enabled: true
+
+    - name: Iniciar kubelet
+      systemd:
+        name: kubelet
+        state: started
+
+    - name: Añadir endpoint del plano de control
       lineinfile:
         path: /etc/hosts
-        line: "{{ ansible_default_ipv4.address }} k8scp"
+        line: "{{ hostvars[groups['kubernetes_masters'][0]].ansible_default_ipv4.address }} k8scp"
         state: present
 
