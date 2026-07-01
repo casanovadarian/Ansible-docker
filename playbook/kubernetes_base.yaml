@@ -12,6 +12,12 @@
 - name: Instalar dependencias base para Kubernetes
   hosts: kubernetes
   become: true
+
+#  environment:    # Si muchas tareas necesitan Internet, define el entorno a nivel del play:
+#    HTTP_PROXY: "http://{{ proxy_host }}:{{ proxy_port }}"
+#    HTTPS_PROXY: "http://{{ proxy_host }}:{{ proxy_port }}"
+#    NO_PROXY: "localhost,127.0.0.1,10.12.0.0/16"
+
   vars:
   #  ansible_become_pass: "{{ remote_become_pass }}"
     proxy_host: "{{ hostvars['localhost'].tinyproxy_host | default(hostvars['localhost']['ansible_default_ipv4']['address']) }}"
@@ -191,6 +197,7 @@
     - name: Añadir endpoint del plano de control
       lineinfile:
         path: /etc/hosts
-        line: "{{ hostvars[groups['kubernetes_masters'][0]].ansible_default_ipv4.address }} k8scp"
+        line: "10.12.118.219 k8scp"
+        # line: "{{ hostvars[groups['kubernetes_masters'][0]].ansible_default_ipv4.address }} k8scp"
         state: present
 
