@@ -4,32 +4,181 @@
   vars:
     target_hosts: kubernetes
 
-#- name: Instalar y configurar TinyProxy
-#  import_playbook: montarTinyProxy.yml
-#  vars:
-#    target_hosts: kubernetes
+- name: Instalar y configurar TinyProxy
+  import_playbook: montarTinyProxy.yml
+  vars:
+    target_hosts: kubernetes
 
-#- name: Prueba de conectividad a través del proxy
-#  hosts: kubernetes
-#  gather_facts: no
-#  tasks:
-#    - name: Ping a google.com con proxy
-#      shell: |
-#        source /etc/profile.d/tinyproxy_proxy.sh 2>/dev/null || true
-#        ping -c 4 google.com
-##      register: ping_result
- #     changed_when: false
+- name: Instalar dependencias base para Kubernetes
+  hosts: kubernetes
+  become: true
+  vars:
+  #  ansible_become_pass: "{{ remote_become_pass }}"
+    proxy_host: "{{ hostvars['localhost'].tinyproxy_host | default(hostvars['localhost']['ansible_default_ipv4']['address']) }}"
+    proxy_port: "{{ hostvars['localhost'].tinyproxy_port }}"
+    docker_arch_map:
+      x86_64: amd64
+      amd64: amd64
+      aarch64: arm64
+      arm64: arm64
+  tasks:
+    - name: Instalar paquetes requeridos
+      apt:
+        name:
+          - curl
+          - gnupg
+          - apt-transport-https
+          - git
+          - wget
+          - software-properties-common
+          - lsb-release
+          - ca-certificates
+          - socat
+        state: present
+        update_cache: yes
 
-#    - name: Mostrar resultado del ping
-#      debug:
-#        msg: |
-#          ===== Resultado ping en {{ inventory_hostname }} =====
-#          {{ ping_result.stdout }}
-#      when: ping_result.stdout is defined
+    - name: Desactivar swap temporalmente
+      command: swapoff -a
+      changed_when: false
 
-#    - name: Mostrar error si existe
-#      debug:
-#        msg: |
-#          ===== Error en {{ inventory_hostname }} =====
-#          {{ ping_result.stderr }}
-#      when: ping_result.stderr is defined and ping_result.stderr != ""
+    - name: Comentar la entrada de swap en /etc/fstab
+      replace:
+        path: /etc/fstab
+        regexp: '^(.*swap.*)$'
+        replace: '#\1'
+
+
+    - name: Cargar módulos del kernel overlay y br_netfilter
+      community.general.modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - overlay
+        - br_netfilter
+
+    - name: Crear configuración de sysctl para Kubernetes
+      copy:
+        dest: /etc/sysctl.d/kubernetes.conf
+        content: |
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.bridge.bridge-nf-call-iptables = 1
+          net.ipv4.ip_forward = 1
+        mode: '0644'
+
+    - name: Aplicar configuración sysctl
+      command: sysctl --system
+      changed_when: false
+
+    - name: Crear directorio para keyrings de Docker
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Importar clave GPG de Docker
+      get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /tmp/docker.gpg
+        mode: '0644'
+
+    - name: Desarmar clave GPG de Docker
+      command: gpg --dearmor -o /etc/apt/keyrings/docker.gpg /tmp/docker.gpg
+      args:
+        creates: /etc/apt/keyrings/docker.gpg
+
+    - name: Añadir repositorio APT de Docker
+      apt_repository:
+        repo: "deb [arch={{ docker_arch_map[ansible_architecture] }} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        filename: docker
+        state: present
+
+    - name: Instalar containerd.io
+      apt:
+        name: containerd.io
+        state: present
+        update_cache: yes
+
+    - name: Generar configuración por defecto de containerd
+      command: containerd config default
+      register: containerd_default_config
+      changed_when: false
+
+    - name: Escribir configuración de containerd
+      copy:
+        dest: /etc/containerd/config.toml
+        content: "{{ containerd_default_config.stdout | replace('SystemdCgroup = false', 'SystemdCgroup = true') }}"
+        mode: '0644'
+
+    - name: Crear directorio de override para containerd
+      file:
+        path: /etc/systemd/system/containerd.service.d
+        state: directory
+        mode: '0755'
+
+    - name: Configurar proxy para containerd
+      copy:
+        dest: /etc/systemd/system/containerd.service.d/proxy.conf
+        content: |
+          [Service]
+          Environment="HTTP_PROXY=http://{{ proxy_host }}:{{ proxy_port }}"
+          Environment="HTTPS_PROXY=http://{{ proxy_host }}:{{ proxy_port }}"
+          Environment="NO_PROXY=localhost,127.0.0.1,10.12.0.0/16,10.96.0.0/12,192.168.0.0/16,*.uclv.cu,*.uclv.edu.cu,repos.uclv.edu.cu,k8scp,{{ control_plane_endpoint | default('k8scp') }}"
+        mode: '0644'
+
+    - name: Recargar systemd
+      systemd:
+        daemon_reload: true
+
+    - name: Reiniciar servicio containerd
+      systemd:
+        name: containerd
+        state: restarted
+        enabled: true
+
+    - name: Crear directorio para keyrings de Kubernetes
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Importar clave GPG de Kubernetes
+      get_url:
+        url: https://pkgs.k8s.io/core:/stable:/v1.33/deb/Release.key
+        dest: /tmp/kubernetes-release.key
+        mode: '0644'
+
+    - name: Desarmar clave GPG de Kubernetes
+      command: gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg /tmp/kubernetes-release.key
+      args:
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+    - name: Añadir repositorio APT de Kubernetes 1.33
+      copy:
+        dest: /etc/apt/sources.list.d/kubernetes.list
+        content: |
+          deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.33/deb/ /
+        mode: '0644'
+
+    - name: Actualizar caché de APT con el repositorio de Kubernetes
+      apt:
+        update_cache: yes
+
+    - name: Instalar kubeadm, kubelet y kubectl
+      apt:
+        name:
+          - kubeadm=1.33.1-1.1
+          - kubelet=1.33.1-1.1
+          - kubectl=1.33.1-1.1
+        state: present
+        update_cache: yes
+
+    - name: Bloquear versiones de kubeadm, kubelet y kubectl
+      command: apt-mark hold kubelet kubeadm kubectl
+      changed_when: true
+
+    - name: PASO 10 - Añadir entrada de hosts para el nodo maestro
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ ansible_default_ipv4.address }} k8scp"
+        state: present
+

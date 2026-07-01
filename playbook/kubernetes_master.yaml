@@ -1,0 +1,104 @@
+- name: Preparacion de los nodos masters
+  hosts: kubernetes_masters
+  become: yes
+  tasks:
+    
+    - name: PASO 11 - Inicializar el cluster con kubeadm
+      command: >-
+        kubeadm init
+        --pod-network-cidr={{ pod_network_cidr | default('192.168.0.0/16') }}
+        --control-plane-endpoint={{ control_plane_endpoint | default('k8scp:6443') }}
+      register: kubeadm_init_result
+      args:
+        creates: /etc/kubernetes/admin.conf
+
+    - name: Guardar la salida de kubeadm init
+      copy:
+        dest: /root/kubeadm-init.log
+        content: "{{ kubeadm_init_result.stdout ~ '\n' ~ kubeadm_init_result.stderr }}"
+        mode: '0600'
+
+    - name: Crear directorio .kube para el usuario normal
+      become: false
+      file:
+        path: "{{ ansible_env.HOME }}/.kube"
+        state: directory
+        mode: '0755'
+
+    - name: Copiar configuración de kubectl al usuario normal
+      become: false
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: "{{ ansible_env.HOME }}/.kube/config"
+        mode: '0600'
+
+    - name: Instalar bash-completion
+      apt:
+        name: bash-completion
+        state: present
+
+    - name: Habilitar autocompletado de kubectl en bash
+      become: false
+      lineinfile:
+        path: "{{ ansible_env.HOME }}/.bashrc"
+        line: 'source <(kubectl completion bash)'
+        state: present
+
+    - name: Crear directorio para keyrings de Helm
+      file:
+        path: /usr/share/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Importar clave GPG de Helm
+      get_url:
+        url: https://packages.buildkite.com/helm-linux/helm-debian/gpgkey
+        dest: /tmp/helm.gpg
+        mode: '0644'
+
+    - name: Desarmar clave GPG de Helm
+      command: gpg --dearmor -o /usr/share/keyrings/helm.gpg /tmp/helm.gpg
+      args:
+        creates: /usr/share/keyrings/helm.gpg
+
+    - name: Añadir repositorio APT de Helm
+      copy:
+        dest: /etc/apt/sources.list.d/helm-stable-debian.list
+        content: |
+          deb [signed-by=/usr/share/keyrings/helm.gpg] https://packages.buildkite.com/helm-linux/helm-debian/any/ any main
+        mode: '0644'
+
+    - name: Actualizar caché de APT con el repositorio de Helm
+      apt:
+        update_cache: yes
+
+    - name: Instalar Helm
+      apt:
+        name: helm
+        state: present
+
+    - name: Añadir repositorio Helm de Cilium
+      command: helm repo add cilium https://helm.cilium.io/
+      changed_when: true
+
+    - name: Actualizar repositorios de Helm
+      command: helm repo update
+      changed_when: true
+
+    - name: Renderizar manifiesto de Cilium
+      command: >-
+        helm template cilium cilium/cilium --version 1.17.4 --namespace kube-system
+      register: cilium_manifest
+      changed_when: false
+
+    - name: Guardar manifiesto de Cilium
+      copy:
+        dest: /root/cilium.yaml
+        content: "{{ cilium_manifest.stdout }}"
+        mode: '0644'
+
+    - name: Aplicar manifiesto de Cilium
+      command: kubectl apply -f /root/cilium.yaml
+      changed_when: true
+
+
