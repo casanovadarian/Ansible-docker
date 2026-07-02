@@ -18,6 +18,7 @@
         address: 10.12.118.214:6443
       - name: master3
         address: 10.12.118.215:6443
+
   tasks:
     - name: Instalar HAProxy
       ansible.builtin.apt:
@@ -62,18 +63,29 @@
               default_backend {{ haproxy_backend_name }}
 
           backend {{ haproxy_backend_name }}
-              balance roundrobin
-              {% for server in haproxy_backend_servers %}
-              server {{ server.name }} {{ server.address }} check
-              {% endfor %}
-
+            mode tcp
+            option tcplog
+            # Cambiar de httpchk a tcp-check
+            option tcp-check
+            balance roundrobin
+            default-server inter 10s fall 3 rise 2 on-marked-down shutdown-sessions
+            {% for server in haproxy_backend_servers %}
+            server {{ server.name }} {{ server.address }} check check-ssl verify none
+            {% endfor %}
+            
     - name: Validar configuración de HAProxy
       ansible.builtin.command: haproxy -c -f /etc/haproxy/haproxy.cfg
       register: haproxy_check
       changed_when: false
 
-    - name: Habilitar y reiniciar HAProxy
+    - name: Reiniciar HAProxy si la validación es correcta
       ansible.builtin.systemd:
         name: haproxy
         state: restarted
+      when: haproxy_check.rc == 0
+
+    - name: Asegurar que HAProxy esté habilitado y corriendo
+      ansible.builtin.systemd:
+        name: haproxy
+        state: started
         enabled: true

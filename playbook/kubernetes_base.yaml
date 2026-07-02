@@ -184,6 +184,23 @@
       command: apt-mark hold kubelet kubeadm kubectl
       changed_when: true
 
+    - name: Crear directorio para override de kubelet
+      file:
+        path: /etc/systemd/system/kubelet.service.d
+        state: directory
+        mode: '0755'
+
+    - name: Configurar proxy para kubelet
+      copy:
+        dest: /etc/systemd/system/kubelet.service.d/proxy.conf
+        content: |
+          [Service]
+          Environment="HTTP_PROXY=http://{{ proxy_host }}:{{ proxy_port }}"
+          Environment="HTTPS_PROXY=http://{{ proxy_host }}:{{ proxy_port }}"
+          Environment="NO_PROXY=localhost,127.0.0.1,10.12.0.0/16,10.96.0.0/12,192.168.0.0/16,*.uclv.cu,*.uclv.edu.cu,repos.uclv.edu.cu,k8scp"
+        mode: '0644'
+      notify: restart kubelet
+
     - name: Habilitarkubelet
       systemd:
         name: kubelet
@@ -197,7 +214,12 @@
     - name: Añadir endpoint del plano de control
       lineinfile:
         path: /etc/hosts
-        line: "10.12.118.219 k8scp"
+        line: "10.12.118.219 k8scp"     #IP del HAProxy
         # line: "{{ hostvars[groups['kubernetes_masters'][0]].ansible_default_ipv4.address }} k8scp"
         state: present
-
+  handlers:
+  - name: restart kubelet
+    systemd:
+      name: kubelet
+      state: restarted
+      daemon_reload: true

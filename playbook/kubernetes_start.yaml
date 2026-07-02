@@ -1,0 +1,7 @@
+---
+- import_playbook: kubernetes_base.yaml
+  tags: base
+- import_playbook: kubernetes_master.yaml
+  tags: masters
+- import_playbook: kubernetes_workers.yaml
+  tags: workers

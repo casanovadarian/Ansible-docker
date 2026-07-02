@@ -152,7 +152,11 @@
         content: |
           export http_proxy="http://{{ proxy_host }}:{{ proxy_port }}"
           export https_proxy="http://{{ proxy_host }}:{{ proxy_port }}"
+          export HTTP_PROXY="http://{{ proxy_host }}:{{ proxy_port }}"
+          export HTTPS_PROXY="http://{{ proxy_host }}:{{ proxy_port }}"
           export no_proxy="localhost,127.0.0.1,10.12.0.0/16,*.uclv.cu,*.uclv.edu.cu,repos.uclv.edu.cu"
+          export no_proxy="localhost,127.0.0.1,10.12.0.0/16,*.uclv.cu,*.uclv.edu.cu,repos.uclv.edu.cu"
+
         owner: root
         group: root
         mode: '0644'

@@ -1,24 +1,29 @@
-- name: Preparacion de los nodos workers
+- name: Kubernetes Workers Join
   hosts: kubernetes_workers
-  become: yes
+  become: true
+
   tasks:
-    - name: Generar el comando kubeadm join desde un nodo master
-      command: kubeadm token create --print-join-command
-      register: kubeadm_join_command
-      delegate_to: "{{ groups['kubernetes_masters'][0] }}"
-      run_once: true
-      become: true
-      changed_when: false
 
-    - name: Guardar el comando de unión en el host master
-      set_fact:
-        kubeadm_join_command: "{{ kubeadm_join_command.stdout | trim }}"
-      delegate_to: "{{ groups['kubernetes_masters'][0] }}"
-      run_once: true
-
-    - name: Unir el nodo worker al cluster
-      command: "{{ hostvars[groups['kubernetes_masters'][0]].kubeadm_join_command }}"
+  # =========================================================
+  # JOIN WORKERS USANDO VARIABLE GLOBAL
+  # =========================================================
+    - name: Join worker nodes to cluster
+      command: "{{ hostvars['k8s_shared']['shared_worker_join_cmd'] }}"
       args:
         creates: /etc/kubernetes/kubelet.conf
 
+  # =========================================================
+  # VERIFICACIÓN BÁSICA
+  # =========================================================
+    - name: Verificar kubelet activo
+      systemd:
+        name: kubelet
+        state: started
+        enabled: true
 
+  # =========================================================
+  # DEBUG OPCIONAL
+  # =========================================================
+    - name: Mostrar join usado
+      debug:
+        msg: "{{ hostvars['k8s_shared']['shared_worker_join_cmd'] }}"
