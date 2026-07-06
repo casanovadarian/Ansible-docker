@@ -1,0 +1,48 @@
+---
+- name: Instalar NFS Provisioner
+  hosts: master01
+  become: false
+
+  environment:    # Si muchas tareas necesitan Internet, define el entorno a nivel del play:
+    HTTP_PROXY: "http://{{ proxy_host }}:{{ proxy_port }}"
+    HTTPS_PROXY: "http://{{ proxy_host }}:{{ proxy_port }}"
+    NO_PROXY: "localhost,127.0.0.1,10.12.0.0/16,*.uclv.cu,*.uclv.edu.cu,repos.uclv.edu.cu"  
+
+  vars:
+
+    nfs_server: 10.12.118.204               #IP del servidor NFS
+    nfs_path: /root/exports/kubernetes
+    proxy_host: "{{ hostvars['localhost'].tinyproxy_host | default(hostvars['localhost']['ansible_default_ipv4']['address']) }}"
+    proxy_port: "{{ hostvars['localhost'].tinyproxy_port }}"
+
+  tasks:
+
+    - name: Agregar repositorio Helm
+      kubernetes.core.helm_repository:
+        name: nfs-subdir-external-provisioner
+        repo_url: https://kubernetes-sigs.github.io/nfs-subdir-external-provisioner/
+
+    - name: Actualizar repositorios Helm
+      ansible.builtin.command:
+        cmd: helm repo update
+
+    - name: Instalar Provisioner
+      kubernetes.core.helm:
+        name: nfs-client
+        chart_ref: nfs-subdir-external-provisioner/nfs-subdir-external-provisioner
+        release_namespace: kube-system
+        create_namespace: true
+
+        values:
+
+          nfs:
+            server: "{{ nfs_server }}"
+            path: "{{ nfs_path }}"
+
+          storageClass:
+
+            create: true
+            defaultClass: true
+            name: nfs-client
+
+          reclaimPolicy: Delete

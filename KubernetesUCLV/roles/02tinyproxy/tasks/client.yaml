@@ -1,0 +1,48 @@
+---
+# roles/02tinyproxy/tasks/client.yml
+
+- name: Definir variables del proxy basadas en el localhost
+  ansible.builtin.set_fact:
+    proxy_host: "{{ hostvars['localhost'].tinyproxy_host | default(hostvars['localhost']['ansible_default_ipv4']['address']) }}"
+    proxy_port: "{{ hostvars['localhost'].tinyproxy_port }}"
+
+- name: Crear archivo de configuración de proxy en /etc/profile.d
+  ansible.builtin.copy:
+    dest: /etc/profile.d/tinyproxy_proxy.sh
+    content: |
+      export http_proxy="http://{{ proxy_host }}:{{ proxy_port }}"
+      export https_proxy="http://{{ proxy_host }}:{{ proxy_port }}"
+      export HTTP_PROXY="http://{{ proxy_host }}:{{ proxy_port }}"
+      export HTTPS_PROXY="http://{{ proxy_host }}:{{ proxy_port }}"
+      export no_proxy="{{ proxy_no_proxy }}"
+      export NO_PROXY="{{ proxy_no_proxy }}"
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Configurar APT para usar el proxy y mantener mirrors UCLV directos
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/99proxy
+    content: |
+      Acquire::http::Proxy "http://{{ proxy_host }}:{{ proxy_port }}";
+      Acquire::https::Proxy "http://{{ proxy_host }}:{{ proxy_port }}";
+
+      # Excluir el mirror local de la UCLV (DIRECTO)
+      Acquire::http::Proxy::repos.uclv.edu.cu "DIRECT";
+      Acquire::https::Proxy::repos.uclv.edu.cu "DIRECT";
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Probar curl hacia registry.k8s.io/v2 usando el proxy
+  ansible.builtin.shell: |
+    source /etc/profile.d/tinyproxy_proxy.sh
+    curl -I https://registry.k8s.io/v2/
+  args:
+    executable: /bin/bash
+  register: curl_registry_check
+  changed_when: false
+
+- name: Mostrar resultado de la prueba curl
+  ansible.builtin.debug:
+    var: curl_registry_check.stdout_lines

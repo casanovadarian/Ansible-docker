@@ -1,0 +1,6 @@
+---
+# roles/02tinyproxy/handlers/main.yml
+- name: Reiniciar tinyproxy
+  ansible.builtin.systemd:
+    name: tinyproxy
+    state: restarted

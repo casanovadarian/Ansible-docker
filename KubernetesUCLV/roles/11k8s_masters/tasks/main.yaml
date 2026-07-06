@@ -1,0 +1,154 @@
+---
+# roles/11k8s_masters/tasks/main.yml
+
+# ==============================================================================
+# 1. PRE-PULL DE IMÁGENES (Todos los Masters)
+# ==============================================================================
+- name: Pre-pull Kubernetes images para evitar timeouts
+  ansible.builtin.command: "kubeadm config images pull --kubernetes-version={{ k8s_version_pull }}"
+  register: images_pull
+  retries: 3
+  delay: 5
+  until: images_pull.rc == 0
+  changed_when: false
+
+# ==============================================================================
+# 2. INICIALIZACIÓN (Solo el Primer Master)
+# ==============================================================================
+- name: Inicializar clúster de Kubernetes en el primer Master
+  ansible.builtin.command: >
+    kubeadm init
+    --pod-network-cidr={{ pod_network_cidr }}
+    --control-plane-endpoint={{ control_plane_endpoint }}
+    --upload-certs
+  register: kubeadm_init_result
+  args:
+    creates: "{{ kubeconfig_path }}"
+  when: inventory_hostname == groups['kubernetes_masters'][0]
+
+- name: Guardar log de kubeadm init en el nodo raíz
+  ansible.builtin.copy:
+    dest: /root/kubeadm-init.log
+    content: "{{ kubeadm_init_result.stdout | default('') }}\n{{ kubeadm_init_result.stderr | default('') }}"
+    mode: '0600'
+  when: inventory_hostname == groups['kubernetes_masters'][0] and kubeadm_init_result.changed
+
+- name: Esperar a que el API Server responda localmente
+  ansible.builtin.command: "kubectl --kubeconfig={{ kubeconfig_path }} get nodes"
+  register: api_check
+  until: api_check.rc == 0
+  retries: 6
+  delay: 10
+  when: inventory_hostname == groups['kubernetes_masters'][0]
+  changed_when: false
+
+# ==============================================================================
+# 3. EXTRACCIÓN SEGURA DE CREDENCIALES (Solo el Primer Master)
+# ==============================================================================
+- name: Generar comando de join para los nodos del clúster
+  ansible.builtin.command: kubeadm token create --print-join-command
+  register: join_worker_cmd
+  when: inventory_hostname == groups['kubernetes_masters'][0]
+  changed_when: false
+
+- name: Extraer la clave de certificados (Control-Plane encryption key)
+  ansible.builtin.command: kubeadm init phase upload-certs --upload-certs
+  register: cert_key_output
+  when: inventory_hostname == groups['kubernetes_masters'][0]
+  changed_when: false
+
+- name: Registrar datos de unión en el host virtual compartido
+  ansible.builtin.add_host:
+    name: "k8s_shared"
+    shared_worker_join_cmd: "{{ join_worker_cmd.stdout }}"
+    shared_cert_key: "{{ cert_key_output.stdout_lines[-1] | trim }}"
+  when: inventory_hostname == groups['kubernetes_masters'][0]
+  run_once: true
+
+# ==============================================================================
+# 4. UNIR MASTERS SECUNDARIOS (Nodos restantes del grupo)
+# ==============================================================================
+- name: Unir masters secundarios al plano de control de alta disponibilidad
+  ansible.builtin.command: >
+    {{ hostvars['k8s_shared']['shared_worker_join_cmd'] }}
+    --control-plane
+    --certificate-key {{ hostvars['k8s_shared']['shared_cert_key'] }}
+  register: master_join_result
+  args:
+    creates: "{{ kubeconfig_path }}"
+  when: inventory_hostname != groups['kubernetes_masters'][0]
+
+# ==============================================================================
+# 5. CONFIGURACIÓN DE KUBECTL (Todos los Masters)
+# ==============================================================================
+- name: Crear directorio .kube para el usuario root
+  ansible.builtin.file:
+    path: /root/.kube
+    state: directory
+    mode: '0700'
+
+- name: Copiar admin.conf al entorno de root
+  ansible.builtin.copy:
+    src: "{{ kubeconfig_path }}"
+    dest: /root/.kube/config
+    remote_src: true
+    mode: '0600'
+
+- name: Crear directorio .kube para el usuario regular
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.kube"
+    state: directory
+    mode: '0755'
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+
+- name: Copiar kubeconfig al entorno del usuario regular
+  ansible.builtin.copy:
+    src: "{{ kubeconfig_path }}"
+    dest: "/home/{{ ansible_user }}/.kube/config"
+    remote_src: true
+    mode: '0600'
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+
+# ==============================================================================
+# 6. ENTORNO Y CLIS DE TRABAJO (Todos los Masters)
+# ==============================================================================
+- name: Instalar bash-completion para mejorar la shell
+  ansible.builtin.apt:
+    name: bash-completion
+    state: present
+
+- name: Habilitar autocompletado nativo de kubectl en el .bashrc
+  ansible.builtin.lineinfile:
+    path: "/home/{{ ansible_user }}/.bashrc"
+    line: 'source <(kubectl completion bash)'
+    state: present
+
+- name: Instalar Helm utilizando el script oficial de despliegue
+  ansible.builtin.shell: |
+    curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+  args:
+    creates: /usr/local/bin/helm
+
+# ==============================================================================
+# 7. DESPLIEGUE DE RED CILIUM (Solo desde el Primer Master)
+# ==============================================================================
+- name: Agregar el repositorio oficial de Helm para Cilium
+  kubernetes.core.helm_repository:
+    name: cilium
+    repo_url: https://helm.cilium.io/
+  when: inventory_hostname == groups['kubernetes_masters'][0]
+
+- name: Instalar o Actualizar Cilium CNI (Modo nativo sin kube-proxy)
+  kubernetes.core.helm:
+    name: cilium
+    chart_ref: cilium/cilium
+    chart_version: "{{ cilium_version }}"
+    release_namespace: kube-system
+    create_namespace: true
+    values:
+      kubeProxyReplacement: true
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  when: inventory_hostname == groups['kubernetes_masters'][0]

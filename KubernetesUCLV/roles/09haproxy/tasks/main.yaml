@@ -1,0 +1,34 @@
+---
+# roles/09haproxy/tasks/main.yml
+
+- name: Instalar HAProxy en el balanceador
+  ansible.builtin.apt:
+    name: haproxy
+    state: present
+    update_cache: yes
+
+- name: Generar configuración dinámica de HAProxy a partir de la plantilla
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+    owner: root
+    group: root
+    mode: '0644'
+  register: haproxy_config_file
+
+- name: Validar sintaxis de la configuración de HAProxy
+  ansible.builtin.command: haproxy -c -f /etc/haproxy/haproxy.cfg
+  register: haproxy_check
+  changed_when: false
+  failed_when: haproxy_check.rc != 0
+
+- name: Asegurar que HAProxy esté habilitado y corriendo
+  ansible.builtin.systemd:
+    name: haproxy
+    state: started
+    enabled: true
+
+# Disparar el handler si el archivo cambió y la validación fue exitosa
+- name: Forzar reinicio si la configuración cambió correctamente
+  ansible.builtin.meta: flush_handlers
+  when: haproxy_config_file.changed and haproxy_check.rc == 0

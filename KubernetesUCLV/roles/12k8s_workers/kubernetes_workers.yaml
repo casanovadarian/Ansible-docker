@@ -1,0 +1,29 @@
+- name: Kubernetes Workers Join
+  hosts: kubernetes_workers
+  become: true
+
+  tasks:
+
+  # =========================================================
+  # JOIN WORKERS USANDO VARIABLE GLOBAL
+  # =========================================================
+    - name: Join worker nodes to cluster
+      command: "{{ hostvars['k8s_shared']['shared_worker_join_cmd'] }}"
+      args:
+        creates: /etc/kubernetes/kubelet.conf
+
+  # =========================================================
+  # VERIFICACIÓN BÁSICA
+  # =========================================================
+    - name: Verificar kubelet activo
+      systemd:
+        name: kubelet
+        state: started
+        enabled: true
+
+  # =========================================================
+  # DEBUG OPCIONAL
+  # =========================================================
+    - name: Mostrar join usado
+      debug:
+        msg: "{{ hostvars['k8s_shared']['shared_worker_join_cmd'] }}"

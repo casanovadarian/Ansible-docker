@@ -1,0 +1,9 @@
+---
+# roles/09haproxy/defaults/main.yml
+haproxy_frontend_name: "kubernetes_frontend"
+haproxy_backend_name: "kubernetes_backend"
+haproxy_listen_port: 6443
+haproxy_backend_port: 6443
+
+# Nombre del grupo de Ansible donde están los planos de control de K8s
+k8s_masters_group: "kubernetes_masters"

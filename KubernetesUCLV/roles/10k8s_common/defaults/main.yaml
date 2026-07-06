@@ -1,0 +1,17 @@
+---
+# roles/10k8s_common/defaults/main.yml
+
+# Versión de Kubernetes a instalar
+k8s_version: "1.33"
+k8s_package_version: "1.33.1-1.1"
+
+# Variables para los proxies
+proxy_host: "{{ hostvars['localhost'].tinyproxy_host | default(hostvars['localhost']['ansible_default_ipv4']['address']) }}"
+proxy_port: "{{ hostvars['localhost'].tinyproxy_port }}"
+
+# Redes internas de K8s que NUNCA deben ir al proxy (Pod CIDR y Service CIDR por defecto)
+k8s_no_proxy: "localhost,127.0.0.1,10.12.0.0/16,10.96.0.0/12,192.168.0.0/16,*.uclv.cu,*.uclv.edu.cu,repos.uclv.edu.cu,k8scp"
+
+# Obtener dinámicamente la IP del HAProxy desde tu grupo 'lb' del inventario
+control_plane_endpoint_ip: "{{ groups['lb'][0] }}"
+control_plane_endpoint_name: "k8scp"

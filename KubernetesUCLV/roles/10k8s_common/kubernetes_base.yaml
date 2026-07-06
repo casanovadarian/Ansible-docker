@@ -1,0 +1,225 @@
+---
+- name: Incluir base para Kubernetes
+  import_playbook: actualizacion_repos_uclv.yaml
+  vars:
+    target_hosts: kubernetes
+
+- name: Instalar y configurar TinyProxy
+  import_playbook: montarTinyProxy.yml
+  vars:
+    target_hosts: kubernetes
+
+- name: Instalar dependencias base para Kubernetes
+  hosts: kubernetes
+  become: true
+
+#  environment:    # Si muchas tareas necesitan Internet, define el entorno a nivel del play:
+#    HTTP_PROXY: "http://{{ proxy_host }}:{{ proxy_port }}"
+#    HTTPS_PROXY: "http://{{ proxy_host }}:{{ proxy_port }}"
+#    NO_PROXY: "localhost,127.0.0.1,10.12.0.0/16"
+
+  vars:
+  #  ansible_become_pass: "{{ remote_become_pass }}"
+    proxy_host: "{{ hostvars['localhost'].tinyproxy_host | default(hostvars['localhost']['ansible_default_ipv4']['address']) }}"
+    proxy_port: "{{ hostvars['localhost'].tinyproxy_port }}"
+    docker_arch_map:
+      x86_64: amd64
+      amd64: amd64
+      aarch64: arm64
+      arm64: arm64
+  tasks:
+    - name: Instalar paquetes requeridos
+      apt:
+        name:
+          - curl
+          - gnupg
+          - apt-transport-https
+          - git
+          - wget
+          - software-properties-common
+          - lsb-release
+          - ca-certificates
+          - socat
+        state: present
+        update_cache: yes
+
+    - name: Desactivar swap temporalmente
+      command: swapoff -a
+      changed_when: false
+
+    - name: Comentar la entrada de swap en /etc/fstab
+      replace:
+        path: /etc/fstab
+        regexp: '^(.*swap.*)$'
+        replace: '#\1'
+
+
+    - name: Persistir módulos del kernel
+      copy:
+        dest: /etc/modules-load.d/kubernetes.conf
+        content: |
+          overlay
+          br_netfilter
+        mode: '0644'
+
+    - name: Crear configuración de sysctl para Kubernetes
+      copy:
+        dest: /etc/sysctl.d/kubernetes.conf
+        content: |
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.bridge.bridge-nf-call-iptables = 1
+          net.ipv4.ip_forward = 1
+        mode: '0644'
+
+    - name: Aplicar configuración sysctl
+      command: sysctl --system
+      changed_when: false
+
+    - name: Crear directorio para keyrings de Docker
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Importar la clave GPG de Docker al keyring de APT UCLV
+      ansible.builtin.apt_key:
+        url: https://repos.uclv.edu.cu/docker-ce/linux/ubuntu/gpg
+        keyring: /etc/apt/keyrings/docker.gpg
+        state: present
+
+    - name: 5. Agregar el repositorio de Docker al sistema de APT (usando signed-by y mirror de UCLV)
+      ansible.builtin.apt_repository:
+        repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://repos.uclv.edu.cu/docker-ce/linux/ubuntu {{ ansible_facts['distribution_release'] }} stable"
+        state: present
+        filename: docker
+
+    - name: Forzar la actualización del índice de APT después de agregar el repositorio
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: Instalar containerd.io
+      apt:
+        name: containerd.io
+        state: present
+        update_cache: yes
+
+    - name: Generar configuración por defecto de containerd
+      command: containerd config default
+      register: containerd_default_config
+      changed_when: false
+
+    - name: Escribir configuración de containerd
+      copy:
+        dest: /etc/containerd/config.toml
+        content: "{{ containerd_default_config.stdout | replace('SystemdCgroup = false', 'SystemdCgroup = true') }}"
+        mode: '0644'
+
+    - name: Crear directorio de override para containerd
+      file:
+        path: /etc/systemd/system/containerd.service.d
+        state: directory
+        mode: '0755'
+
+    - name: Configurar proxy para containerd
+      copy:
+        dest: /etc/systemd/system/containerd.service.d/proxy.conf
+        content: |
+          [Service]
+          Environment="HTTP_PROXY=http://{{ proxy_host }}:{{ proxy_port }}"
+          Environment="HTTPS_PROXY=http://{{ proxy_host }}:{{ proxy_port }}"
+          Environment="NO_PROXY=localhost,127.0.0.1,10.12.0.0/16,10.96.0.0/12,192.168.0.0/16,*.uclv.cu,*.uclv.edu.cu,repos.uclv.edu.cu,k8scp,{{ control_plane_endpoint | default('k8scp') }}"
+        mode: '0644'
+
+    - name: Recargar systemd
+      systemd:
+        daemon_reload: true
+
+    - name: Reiniciar servicio containerd
+      systemd:
+        name: containerd
+        state: restarted
+        enabled: true
+
+#    - name: Crear directorio para keyrings de Kubernetes
+#      file:
+#        path: /etc/apt/keyrings
+#        state: directory
+#        mode: '0755'
+
+    - name: Importar clave GPG de Kubernetes
+      get_url:
+        url: https://pkgs.k8s.io/core:/stable:/v1.33/deb/Release.key
+        dest: /tmp/kubernetes-release.key
+        mode: '0644'
+      environment:
+        HTTP_PROXY: "http://{{ proxy_host }}:{{ proxy_port }}"
+        HTTPS_PROXY: "http://{{ proxy_host }}:{{ proxy_port }}"
+
+    - name: Desarmar clave GPG de Kubernetes
+      command: gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg /tmp/kubernetes-release.key
+      args:
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+    - name: Añadir repositorio APT de Kubernetes 1.33
+      copy:
+        dest: /etc/apt/sources.list.d/kubernetes.list
+        content: |
+          deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.33/deb/ /
+        mode: '0644'
+
+    - name: Actualizar caché de APT con el repositorio de Kubernetes
+      apt:
+        update_cache: yes
+
+    - name: Instalar kubeadm, kubelet y kubectl
+      apt:
+        name:
+          - kubeadm=1.33.1-1.1
+          - kubelet=1.33.1-1.1
+          - kubectl=1.33.1-1.1
+        state: present
+        update_cache: yes
+
+    - name: Bloquear versiones de kubeadm, kubelet y kubectl
+      command: apt-mark hold kubelet kubeadm kubectl
+      changed_when: true
+
+    - name: Crear directorio para override de kubelet
+      file:
+        path: /etc/systemd/system/kubelet.service.d
+        state: directory
+        mode: '0755'
+
+    - name: Configurar proxy para kubelet
+      copy:
+        dest: /etc/systemd/system/kubelet.service.d/proxy.conf
+        content: |
+          [Service]
+          Environment="HTTP_PROXY=http://{{ proxy_host }}:{{ proxy_port }}"
+          Environment="HTTPS_PROXY=http://{{ proxy_host }}:{{ proxy_port }}"
+          Environment="NO_PROXY=localhost,127.0.0.1,10.12.0.0/16,10.96.0.0/12,192.168.0.0/16,*.uclv.cu,*.uclv.edu.cu,repos.uclv.edu.cu,k8scp"
+        mode: '0644'
+      notify: restart kubelet
+
+    - name: Habilitarkubelet
+      systemd:
+        name: kubelet
+        enabled: true
+
+    - name: Iniciar kubelet
+      systemd:
+        name: kubelet
+        state: started
+
+    - name: Añadir endpoint del plano de control
+      lineinfile:
+        path: /etc/hosts
+        line: "10.12.118.219 k8scp"     #IP del HAProxy
+        # line: "{{ hostvars[groups['kubernetes_masters'][0]].ansible_default_ipv4.address }} k8scp"
+        state: present
+  handlers:
+  - name: restart kubelet
+    systemd:
+      name: kubelet
+      state: restarted
+      daemon_reload: true

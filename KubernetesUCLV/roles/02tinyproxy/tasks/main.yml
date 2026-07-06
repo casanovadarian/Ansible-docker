@@ -1,0 +1,10 @@
+---
+# roles/02tinyproxy/tasks/main.yml
+
+- name: Ejecutar configuración del Servidor Tinyproxy (Localhost)
+  ansible.builtin.include_tasks: local.yml
+  when: inventory_hostname == 'localhost'
+
+- name: Ejecutar configuración de Clientes Proxy (Nodos remotos)
+  ansible.builtin.include_tasks: client.yml
+  when: inventory_hostname != 'localhost'

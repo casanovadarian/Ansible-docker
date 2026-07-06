@@ -1,0 +1,200 @@
+- name: Preparación de los nodos masters
+  hosts: kubernetes_masters
+  become: true
+  environment:    # Si muchas tareas necesitan Internet, define el entorno a nivel del play:
+    HTTP_PROXY: "http://{{ proxy_host }}:{{ proxy_port }}"
+    HTTPS_PROXY: "http://{{ proxy_host }}:{{ proxy_port }}"
+    NO_PROXY: "localhost,127.0.0.1,10.12.0.0/16,*.uclv.cu,*.uclv.edu.cu,repos.uclv.edu.cu"  
+  vars:
+    kubeconfig_path: /etc/kubernetes/admin.conf
+    pod_network_cidr: 192.168.0.0/16
+    control_plane_endpoint: 10.12.118.219:6443    #IP del HAProxy
+
+    proxy_host: "{{ hostvars['localhost'].tinyproxy_host | default(hostvars['localhost']['ansible_default_ipv4']['address']) }}"
+    proxy_port: "{{ hostvars['localhost'].tinyproxy_port }}"
+
+  tasks:
+
+    # =========================
+    # PRE-PULL IMAGES
+    # =========================
+    - name: Pre-pull Kubernetes images (evitar timeout de proxy)
+      command: kubeadm config images pull --kubernetes-version=v1.33.1
+      register: images_pull
+      retries: 3
+      delay: 5
+      until: images_pull.rc == 0
+#      environment:
+#        # Limpiar variables de proxy para pulls directos
+#        HTTP_PROXY: ""
+#        HTTPS_PROXY: ""
+#        http_proxy: ""
+#        https_proxy: ""
+#        NO_PROXY: "registry.k8s.io,*.k8s.io"
+#        no_proxy: "registry.k8s.io,*.k8s.io"
+
+    # =========================
+    # INIT SOLO EN PRIMER MASTER
+    # =========================
+    - name: Inicializar cluster Kubernetes (solo primer master)
+      command: >
+        kubeadm init
+        --pod-network-cidr={{ pod_network_cidr }}
+        --control-plane-endpoint={{ control_plane_endpoint }}
+        --upload-certs
+      register: kubeadm_init_result
+      args:
+        creates: "{{ kubeconfig_path }}"
+      when: inventory_hostname == groups['kubernetes_masters'][0]
+
+    - name: Esperar a que el API Server esté completamente disponible
+      command: >
+        kubectl --kubeconfig={{ kubeconfig_path }} get nodes
+      register: api_check
+      until: api_check.rc == 0
+      retries: 5
+      delay: 5
+      when: inventory_hostname == groups['kubernetes_masters'][0]
+    
+    - name: Guardar log de kubeadm init
+      copy:
+        dest: /root/kubeadm-init.log
+        content: "{{ kubeadm_init_result.stdout | default('') }}\n{{ kubeadm_init_result.stderr | default('') }}"
+        mode: '0600'
+      when: kubeadm_init_result is defined
+
+  # =========================================================
+  # EXTRAER COMANDOS JOIN
+  # =========================================================
+    - name: Generar comando join workers
+      command: kubeadm token create --print-join-command
+      register: join_worker_cmd
+      when: inventory_hostname == groups['kubernetes_masters'][0]
+
+    - name: Generar certificado key para control-plane
+      command: kubeadm init phase upload-certs --upload-certs
+      register: cert_key
+      when: inventory_hostname == groups['kubernetes_masters'][0]
+      
+  # =========================================================
+  # GUARDAR VARIABLES GLOBALES
+  # =========================================================
+    - name: Guardar join worker command
+      set_fact:
+        worker_join_cmd: "{{ join_worker_cmd.stdout }}"
+      when: inventory_hostname == groups['kubernetes_masters'][0]
+
+    - name: Guardar cert key
+      set_fact:
+        control_plane_cert_key: "{{ cert_key.stdout_lines[-1] }}"
+      when: inventory_hostname == groups['kubernetes_masters'][0]
+
+  # =========================================================
+  # HACER VARIABLES GLOBALES DISPONIBLES
+  # =========================================================
+    - name: Compartir join data con otros hosts
+      add_host:
+        name: "k8s_shared"
+        shared_worker_join_cmd: "{{ worker_join_cmd }}"
+        shared_cert_key: "{{ control_plane_cert_key }}"
+      when: inventory_hostname == groups['kubernetes_masters'][0]
+      run_once: true
+
+    # =========================
+    # CONFIGURAR KUBECTL PARA ROOT
+    # =========================
+    - name: Crear kube config para root
+      file:
+        path: /root/.kube
+        state: directory
+        mode: '0700'
+
+    - name: Copiar admin.conf a root kubeconfig
+      copy:
+        src: "{{ kubeconfig_path }}"
+        dest: /root/.kube/config
+        remote_src: true
+        mode: '0600'
+      when: inventory_hostname == groups['kubernetes_masters'][0]
+
+    # =========================
+    # CONFIGURAR USUARIO NORMAL
+    # =========================
+    - name: Crear directorio kube para usuario
+      file:
+        path: "/home/{{ ansible_user }}/.kube"
+        state: directory
+        mode: '0755'
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+
+    - name: Copiar kubeconfig al usuario
+      copy:
+        src: "{{ kubeconfig_path }}"
+        dest: "/home/{{ ansible_user }}/.kube/config"
+        remote_src: true
+        mode: '0600'
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+      when: inventory_hostname == groups['kubernetes_masters'][0]
+
+    # =========================
+    # HERRAMIENTAS BASE
+    # =========================
+    - name: Instalar bash-completion
+      apt:
+        name: bash-completion
+        state: present
+
+    - name: Habilitar kubectl autocomplete
+      lineinfile:
+        path: "/home/{{ ansible_user }}/.bashrc"
+        line: 'source <(kubectl completion bash)'
+        state: present
+      become: false
+
+    # =========================
+    # HELM (CORREGIDO)
+    # =========================
+    - name: Instalar Helm (repositorio oficial)
+      shell: |
+        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+      args:
+        creates: /usr/local/bin/helm
+
+    - name: Agregar repo Cilium
+      command: helm repo add cilium https://helm.cilium.io/
+      changed_when: true
+      when: inventory_hostname == groups['kubernetes_masters'][0]
+
+    - name: Actualizar repos Helm
+      command: helm repo update
+      changed_when: true
+      when: inventory_hostname == groups['kubernetes_masters'][0]
+
+    # =========================
+    # CILIUM (MEJOR PRÁCTICA)
+    # =========================
+    - name: Instalar/Actualizar Cilium con Helm (idempotente)
+      command: >
+        helm upgrade --install cilium cilium/cilium
+        --version 1.17.4
+        --namespace kube-system
+        --set kubeProxyReplacement=true
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      when: inventory_hostname == groups['kubernetes_masters'][0]
+      changed_when: "'has been upgraded' in cilium_install.stdout or 'has been installed' in cilium_install.stdout"
+      register: cilium_install
+
+   # =========================================================
+   # 6. JOIN OTROS MASTERS
+   # =========================================================
+    - name: Join control-plane masters
+      command: >
+        {{ hostvars['k8s_shared']['shared_worker_join_cmd'] }}
+        --control-plane
+        --certificate-key {{ hostvars['k8s_shared']['shared_cert_key'] }}
+      when: inventory_hostname != groups['kubernetes_masters'][0]
+      args:
+        creates: /etc/kubernetes/admin.conf

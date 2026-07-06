@@ -1,0 +1,54 @@
+---
+# site.yml
+
+# ==============================================================================
+# FASE 0: Autenticación Sudo Inicial
+# ==============================================================================
+- hosts: all:localhost
+  gather_facts: false
+  vars_prompt:
+    - name: sudo_password
+      prompt: "Introduce la contraseña sudo para el usuario uclv"
+      private: yes
+  tasks:
+    - name: Asignar contraseña de sudo globalmente
+      ansible.builtin.set_fact:
+        ansible_become_pass: "{{ sudo_password }}"
+      tags: always
+
+# ==============================================================================
+# FASE 1: Espejos UCLV (Se aplica al LB, Masters y Workers)
+# ==============================================================================
+- hosts: all:!localhost
+  become: yes
+  roles:
+    - 01reposUCLV
+
+# ==============================================================================
+# FASE 2: Tráfico routing con Tinyproxy (Localhost server -> Nodos clientes)
+# ==============================================================================
+- hosts: localhost
+  become: yes
+  roles:
+    - 02tinyproxy
+
+- hosts: all:!localhost
+  become: yes
+  roles:
+    - 02tinyproxy
+
+# ==============================================================================
+# FASE 3: Balanceador de Carga de Alta Disponibilidad
+# ==============================================================================
+- hosts: lb
+  become: yes
+  roles:
+    - 09haproxy
+
+# ==============================================================================
+# FASE 4: Infraestructura base del clúster de Kubernetes (Nodos del pool)
+# ==============================================================================
+- hosts: kubernetes
+  become: yes
+  roles:
+    - 10k8s_common

@@ -1,0 +1,165 @@
+---
+# roles/10k8s_common/tasks/main.yml
+
+- name: Instalar paquetes requeridos del sistema
+  ansible.builtin.apt:
+    name:
+      - curl
+      - gnupg
+      - apt-transport-https
+      - git
+      - wget
+      - software-properties-common
+      - lsb-release
+      - ca-certificates
+      - socat
+    state: present
+    update_cache: yes
+
+- name: Desactivar swap temporalmente
+  ansible.builtin.command: swapoff -a
+  changed_when: false
+
+- name: Comentar la entrada de swap en /etc/fstab de forma permanente
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^(.*swap.*)$'
+    replace: '#\1'
+
+- name: Persistir módulos del kernel requeridos por Kubernetes
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/kubernetes.conf
+    content: |
+      overlay
+      br_netfilter
+    mode: '0644'
+
+- name: Crear configuración de sysctl para Kubernetes (Redes superpuestas)
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/kubernetes.conf
+    content: |
+      net.bridge.bridge-nf-call-ip6tables = 1
+      net.bridge.bridge-nf-call-iptables = 1
+      net.ipv4.ip_forward = 1
+    mode: '0644'
+
+- name: Aplicar configuración sysctl en tiempo de ejecución
+  ansible.builtin.command: sysctl --system
+  changed_when: false
+
+- name: Crear directorio para keyrings de APT
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+
+- name: Importar la clave GPG de Docker desde el espejo de la UCLV
+  ansible.builtin.apt_key:
+    url: https://repos.uclv.edu.cu/docker-ce/linux/ubuntu/gpg
+    keyring: /etc/apt/keyrings/docker.gpg
+    state: present
+
+- name: Agregar el repositorio de Docker de la UCLV al sistema
+  ansible.builtin.apt_repository:
+    repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://repos.uclv.edu.cu/docker-ce/linux/ubuntu {{ ansible_facts['distribution_release'] }} stable"
+    state: present
+    filename: docker
+
+- name: Instalar containerd.io
+  ansible.builtin.apt:
+    name: containerd.io
+    state: present
+    update_cache: yes
+
+- name: Generar configuración por defecto de containerd
+  ansible.builtin.command: containerd config default
+  register: containerd_default_config
+  changed_when: false
+
+- name: Escribir configuración de containerd activando SystemdCgroup
+  ansible.builtin.copy:
+    dest: /etc/containerd/config.toml
+    content: "{{ containerd_default_config.stdout | replace('SystemdCgroup = false', 'SystemdCgroup = true') }}"
+    mode: '0644'
+  notify: restart containerd
+
+- name: Crear directorio de override systemd para containerd
+  ansible.builtin.file:
+    path: /etc/systemd/system/containerd.service.d
+    state: directory
+    mode: '0755'
+
+- name: Configurar proxy de salida para el demonio de containerd (Descarga de imágenes)
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/containerd.service.d/proxy.conf
+    content: |
+      [Service]
+      Environment="HTTP_PROXY=http://{{ proxy_host }}:{{ proxy_port }}"
+      Environment="HTTPS_PROXY=http://{{ proxy_host }}:{{ proxy_port }}"
+      Environment="NO_PROXY={{ k8s_no_proxy }},{{ control_plane_endpoint_name }}"
+    mode: '0644'
+  notify: restart containerd
+
+- name: Importar clave GPG oficial de Kubernetes
+  ansible.builtin.get_url:
+    url: "https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/deb/Release.key
+    dest: /tmp/kubernetes-release.key
+    mode: '0644'
+  environment:
+    HTTP_PROXY: "http://{{ proxy_host }}:{{ proxy_port }}"
+    HTTPS_PROXY: "http://{{ proxy_host }}:{{ proxy_port }}"
+
+- name: Desarmar clave GPG de Kubernetes para APT
+  ansible.builtin.command: gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg /tmp/kubernetes-release.key
+  args:
+    creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+- name: Añadir repositorio APT oficial de Kubernetes
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/kubernetes.list
+    content: |
+      deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/deb/ /
+    mode: '0644'
+
+- name: Instalar herramientas base (kubeadm, kubelet, kubectl)
+  ansible.builtin.apt:
+    name:
+      - "kubeadm={{ k8s_package_version }}"
+      - "kubelet={{ k8s_package_version }}"
+      - "kubectl={{ k8s_package_version }}"
+    state: present
+    update_cache: yes
+
+- name: Bloquear versiones de las herramientas de K8s (Evitar actualizaciones accidentales)
+  ansible.builtin.command: apt-mark hold kubelet kubeadm kubectl
+  idempotent: yes
+  changed_when: false
+
+- name: Crear directorio para override systemd de kubelet
+  ansible.builtin.file:
+    path: /etc/systemd/system/kubelet.service.d
+    state: directory
+    mode: '0755'
+
+- name: Configurar proxy de entorno para kubelet
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/kubelet.service.d/proxy.conf
+    content: |
+      [Service]
+      Environment="HTTP_PROXY=http://{{ proxy_host }}:{{ proxy_port }}"
+      Environment="HTTPS_PROXY=http://{{ proxy_host }}:{{ proxy_port }}"
+      Environment="NO_PROXY={{ k8s_no_proxy }}"
+    mode: '0644'
+  notify: restart kubelet
+
+- name: Asegurar que el servicio kubelet esté habilitado y corriendo
+  ansible.builtin.systemd:
+    name: kubelet
+    state: started
+    enabled: true
+
+- name: Mapear el endpoint del plano de control en el archivo /etc/hosts
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    line: "{{ control_plane_endpoint_ip }} {{ control_plane_endpoint_name }}"
+    state: present
