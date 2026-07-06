@@ -1,0 +1,8 @@
+---
+# roles/20nfs_clients/tasks/main.yml
+
+- name: Instalar paquete nfs-common en los nodos de Kubernetes
+  ansible.builtin.apt:
+    name: nfs-common
+    state: present
+    update_cache: yes

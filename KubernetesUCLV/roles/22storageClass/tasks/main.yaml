@@ -1,0 +1,27 @@
+---
+# roles/22storageClass/tasks/main.yml
+
+- name: Crear o actualizar la definición del StorageClass en Kubernetes
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: storage.k8s.io/v1
+      kind: StorageClass
+      metadata:
+        name: "{{ storage_class_name }}"
+        annotations:
+          # Esto lo marca como el StorageClass por defecto del clúster de forma explícita
+          storageclass.kubernetes.io/is-default-class: "true"
+      provisioner: "{{ storage_class_provisioner }}"
+      reclaimPolicy: "{{ storage_class_reclaim_policy }}"
+      volumeBindingMode: "{{ storage_class_binding_mode }}"
+      allowVolumeExpansion: "{{ storage_class_allow_expansion }}"
+
+- name: Obtener el estado actual de los StorageClasses del clúster
+  ansible.builtin.command: kubectl get storageclass
+  register: kubectl_sc_output
+  changed_when: false
+
+- name: Mostrar el listado de StorageClasses activos
+  ansible.builtin.debug:
+    var: kubectl_sc_output.stdout_lines

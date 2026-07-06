@@ -52,3 +52,58 @@
   become: yes
   roles:
     - 10k8s_common
+    - 20nfs_clients   
+
+# ==============================================================================
+# FASE 5: Inicialización y Alta Disponibilidad del Plano de Control
+# ==============================================================================
+- hosts: kubernetes_masters
+  become: yes
+  environment:
+    HTTP_PROXY: "http://{{ proxy_host }}:{{ proxy_port }}"
+    HTTPS_PROXY: "http://{{ proxy_host }}:{{ proxy_port }}"
+    http_proxy: "http://{{ proxy_host }}:{{ proxy_port }}"
+    https_proxy: "http://{{ proxy_host }}:{{ proxy_port }}"
+    NO_PROXY: "{{ k8s_no_proxy }}"
+    no_proxy: "{{ k8s_no_proxy }}"
+  vars:
+    proxy_host: "{{ hostvars['localhost'].tinyproxy_host | default(hostvars['localhost']['ansible_default_ipv4']['address']) }}"
+    proxy_port: "{{ hostvars['localhost'].tinyproxy_port }}"
+    k8s_no_proxy: "localhost,127.0.0.1,10.12.0.0/16,*.uclv.cu,*.uclv.edu.cu,repos.uclv.edu.cu"
+  roles:
+    - 11k8s_masters
+
+# ==============================================================================
+# FASE 6: Incorporación del Pool de Cómputo y Cargas de Trabajo (Workers)
+# ==============================================================================
+- hosts: kubernetes_workers
+  become: yes
+  roles:
+    - 12k8s_workers
+
+# ==============================================================================
+# FASE 7: Aprovisionamiento de Almacenamiento Dinámico (StorageClass)
+# ==============================================================================
+- hosts: "{{ groups['kubernetes_masters'][0] }}"  # Se ejecuta dinámicamente en tu primer Master (10.12.118.210)
+  become: false  # Helm corre con los privilegios de espacio de usuario (uclv)
+  environment:
+    HTTP_PROXY: "http://{{ proxy_host }}:{{ proxy_port }}"
+    HTTPS_PROXY: "http://{{ proxy_host }}:{{ proxy_port }}"
+    http_proxy: "http://{{ proxy_host }}:{{ proxy_port }}"
+    https_proxy: "http://{{ proxy_host }}:{{ proxy_port }}"
+    NO_PROXY: "{{ k8s_no_proxy }}"
+    no_proxy: "{{ k8s_no_proxy }}"
+  vars:
+    proxy_host: "{{ hostvars['localhost'].tinyproxy_host | default(hostvars['localhost']['ansible_default_ipv4']['address']) }}"
+    proxy_port: "{{ hostvars['localhost'].tinyproxy_port }}"
+    k8s_no_proxy: "localhost,127.0.0.1,10.12.0.0/16,*.uclv.cu,*.uclv.edu.cu,repos.uclv.edu.cu"
+  roles:
+    - 21nfs_provisioner
+
+# ==============================================================================
+# FASE 8: Declaración de Clases de Almacenamiento del Clúster (StorageClass)
+# ==============================================================================
+- hosts: "{{ groups['kubernetes_masters'][0] }}"  # Apunta dinámicamente a tu primer Master (10.12.118.210)
+  become: false  # Usa las credenciales del usuario regular para hablar con la API
+  roles:
+    - 22storageClass

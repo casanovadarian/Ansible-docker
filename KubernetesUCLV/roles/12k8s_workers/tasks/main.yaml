@@ -1,0 +1,27 @@
+---
+# roles/12k8s_workers/tasks/main.yml
+
+# ==============================================================================
+# 1. UNIÓN AL CLÚSTER (Uso de variable en memoria compartida)
+# ==============================================================================
+- name: Unir el nodo trabajador al clúster de Kubernetes
+  ansible.builtin.command: "{{ hostvars['k8s_shared']['shared_worker_join_cmd'] }}"
+  args:
+    creates: /etc/kubernetes/kubelet.conf
+  register: worker_join_result
+
+# ==============================================================================
+# 2. VERIFICACIÓN Y PERSISTENCIA DEL SERVICIO
+# ==============================================================================
+- name: Asegurar que el servicio kubelet esté habilitado y corriendo correctamente
+  ansible.builtin.systemd:
+    name: kubelet
+    state: started
+    enabled: true
+
+# ==============================================================================
+# 3. LOG / DEBUGGING
+# ==============================================================================
+- name: Mostrar el comando de join utilizado (Solo con verbosidad -v o debug)
+  ansible.builtin.debug:
+    msg: "Nodo unido usando el comando: {{ hostvars['k8s_shared']['shared_worker_join_cmd'] }}"
