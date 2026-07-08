@@ -1,10 +1,79 @@
+#---
+# roles/02tinyproxy/tasks/main.yml
+
+#- name: Ejecutar configuración del Servidor Tinyproxy (Localhost)
+#  ansible.builtin.include_tasks: local.yml
+#  when: inventory_hostname == 'localhost'
+
+#- name: Ejecutar configuración de Clientes Proxy (Nodos remotos)
+#  ansible.builtin.include_tasks: client.yml
+#  when: inventory_hostname != 'localhost'
+
 ---
 # roles/02tinyproxy/tasks/main.yml
 
+# ==============================================================================
+# CONFIGURACIÓN PARA EL SERVIDOR (LOCALHOST)
+# ==============================================================================
 - name: Ejecutar configuración del Servidor Tinyproxy (Localhost)
-  ansible.builtin.include_tasks: local.yml
+  block:
+    - name: Instalar Tinyproxy en la máquina local
+      ansible.builtin.apt:
+        name: tinyproxy
+        state: present
+        update_cache: yes
+
+    - name: Configurar archivo tinyproxy.conf local
+      ansible.builtin.lineinfile:
+        path: /etc/tinyproxy/tinyproxy.conf
+        regexp: '^{{ item.regexp }}'
+        line: '{{ item.line }}'
+      loop:
+        - { regexp: 'Port ', line: 'Port 8888' }
+        - { regexp: 'Allow ', line: 'Allow 10.12.0.0/16' } # Ajusta a tu subred de la UCLV si aplica
+
+    - name: Asegurar que Tinyproxy local esté corriendo
+      ansible.builtin.systemd:
+        name: tinyproxy
+        state: restarted
+        enabled: true
   when: inventory_hostname == 'localhost'
 
-- name: Ejecutar configuración de Clientes Proxy (Nodos remotos)
-  ansible.builtin.include_tasks: client.yml
+# ==============================================================================
+# CONFIGURACIÓN PARA LOS CLIENTES (REMOTOS)
+# ==============================================================================
+- name: Configurar clientes proxy en servidores remotos
+  block:
+    - name: Crear variables de entorno globales para el proxy en los nodos
+      ansible.builtin.copy:
+        dest: /etc/profile.d/proxy.sh
+        content: |
+          export http_proxy="http://{{ proxy_host }}:{{ proxy_port }}"
+          export https_proxy="http://{{ proxy_host }}:{{ proxy_port }}"
+          export no_proxy="localhost,127.0.0.1,10.12.0.0/16,*.uclv.cu,*.uclv.edu.cu,repos.uclv.edu.cu"
+        mode: '0644'
   when: inventory_hostname != 'localhost'
+
+- name: Configurar proxy exclusivo para APT respetando la UCLV
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/99proxy
+    content: |
+      Acquire::http::Proxy "http://{{ proxy_host }}:{{ proxy_port }}";
+      Acquire::https::Proxy "http://{{ proxy_host }}:{{ proxy_port }}";
+      Acquire::http::Proxy::repos.uclv.edu.cu "DIRECT";
+      Acquire::http::Proxy::mirror.uclv.edu.cu "DIRECT";
+    mode: '0644'
+  when: inventory_hostname != 'localhost'
+
+- name: Probar curl hacia registry.k8s.io/v2 usando el proxy
+  shell: |
+    source /etc/profile.d/tinyproxy_proxy.sh
+    curl -I https://registry.k8s.io/v2/
+  args:
+    executable: /bin/bash
+  register: curl_registry_check
+  changed_when: false
+
+- name: Mostrar resultado de la prueba curl
+  debug:
+    var: curl_registry_check.stdout_lines

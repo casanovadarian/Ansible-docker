@@ -1,9 +1,18 @@
----
+#---
 # roles/02tinyproxy/defaults/main.yml
-tinyproxy_port: 8888
+#tinyproxy_port: 8888
 
 # Lista de dominios y subredes que NO deben usar el proxy
-proxy_no_proxy: "localhost,127.0.0.1,10.12.0.0/16,*.uclv.cu,*.uclv.edu.cu,repos.uclv.edu.cu"
+#proxy_no_proxy: "localhost,127.0.0.1,10.12.0.0/16,*.uclv.cu,*.uclv.edu.cu,repos.uclv.edu.cu"
 
 # Host de destino para aplicar las reglas de firewall (por defecto el grupo k8s o vps)
-target_hosts: "all"
+#target_hosts: "all"
+
+---
+# roles/02tinyproxy/defaults/main.yml
+
+# Puerto por defecto para Tinyproxy
+proxy_port: "8888"
+
+# Resuelve la IP del host que ejecuta Ansible (tu máquina local)
+proxy_host: "{{ hostvars['localhost']['ansible_default_ipv4']['address'] | default('127.0.0.1') }}"

@@ -2,18 +2,18 @@
 # site.yml
 
 # ==============================================================================
-# FASE 0: Autenticación Sudo Inicial
+# FASE 0: Pedir ÚNICAMENTE la contraseña de sudo de la Máquina Local (localhost)
 # ==============================================================================
-- hosts: all:localhost
+- hosts: localhost
   gather_facts: false
   vars_prompt:
-    - name: sudo_password
-      prompt: "Introduce la contraseña sudo para el usuario uclv"
+    - name: local_sudo_pass
+      prompt: "Introduce la contraseña sudo de tu máquina LOCAL (localhost)"
       private: yes
   tasks:
-    - name: Asignar contraseña de sudo globalmente
+    - name: Asignar contraseña de sudo solo a localhost
       ansible.builtin.set_fact:
-        ansible_become_pass: "{{ sudo_password }}"
+        ansible_become_pass: "{{ local_sudo_pass }}"
       tags: always
 
 # ==============================================================================
@@ -25,13 +25,14 @@
     - 01reposUCLV
 
 # ==============================================================================
-# FASE 2: Tráfico routing con Tinyproxy (Localhost server -> Nodos clientes)
+# FASE 2: Servidor Tinyproxy en Local (Usa su variable aislada)
 # ==============================================================================
 - hosts: localhost
   become: yes
   roles:
     - 02tinyproxy
 
+# Clientes Tinyproxy en los servidores remotos (Usa la clave remota del -K)
 - hosts: all:!localhost
   become: yes
   roles:

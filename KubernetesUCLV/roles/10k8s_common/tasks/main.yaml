@@ -2,7 +2,7 @@
 # roles/10k8s_common/tasks/main.yml
 
 - name: Instalar paquetes requeridos del sistema
-  ansible.builtin.apt:
+  apt:
     name:
       - curl
       - gnupg
@@ -14,7 +14,8 @@
       - ca-certificates
       - socat
     state: present
-    update_cache: yes
+    update_cache: no
+
 
 - name: Desactivar swap temporalmente
   ansible.builtin.command: swapoff -a
@@ -69,7 +70,10 @@
   ansible.builtin.apt:
     name: containerd.io
     state: present
-    update_cache: yes
+    update_cache: no
+  environment:
+    HTTP_PROXY: "http://{{ proxy_host }}:{{ proxy_port }}"
+    HTTPS_PROXY: "http://{{ proxy_host }}:{{ proxy_port }}"
 
 - name: Generar configuración por defecto de containerd
   ansible.builtin.command: containerd config default
@@ -102,7 +106,7 @@
 
 - name: Importar clave GPG oficial de Kubernetes
   ansible.builtin.get_url:
-    url: "https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/deb/Release.key
+    url: "https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/deb/Release.key"  # <-- Corregido: comilla de cierre añadida
     dest: /tmp/kubernetes-release.key
     mode: '0644'
   environment:
@@ -132,7 +136,6 @@
 
 - name: Bloquear versiones de las herramientas de K8s (Evitar actualizaciones accidentales)
   ansible.builtin.command: apt-mark hold kubelet kubeadm kubectl
-  idempotent: yes
   changed_when: false
 
 - name: Crear directorio para override systemd de kubelet
