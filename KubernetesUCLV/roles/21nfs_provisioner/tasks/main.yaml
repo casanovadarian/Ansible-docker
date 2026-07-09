@@ -22,3 +22,7 @@
         defaultClass: "{{ storage_class_default }}"
         name: "{{ storage_class_name }}"
       reclaimPolicy: "{{ storage_reclaim_policy }}"
+  register: helm_nfs_result
+  retries: 5
+  delay: 10
+  until: helm_nfs_result is success

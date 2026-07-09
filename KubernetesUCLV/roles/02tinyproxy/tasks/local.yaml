@@ -82,4 +82,3 @@
   ansible.builtin.set_fact:
     tinyproxy_port: "{{ tinyproxy_port }}"
     tinyproxy_host: "{{ (ansible_all_ipv4_addresses | select('match', '^10\\.12\\.') | list | first) | default(ansible_default_ipv4.address) }}"
-  cacheable: yes

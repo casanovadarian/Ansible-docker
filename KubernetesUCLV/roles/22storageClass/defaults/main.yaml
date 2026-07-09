@@ -4,4 +4,4 @@ storage_class_name: "nfs-client"
 storage_class_provisioner: "cluster.local/nfs-subdir-external-provisioner"
 storage_class_reclaim_policy: "Delete"
 storage_class_binding_mode: "Immediate"
-storage_class_allow_expansion: trues
+storage_class_allow_expansion: true
