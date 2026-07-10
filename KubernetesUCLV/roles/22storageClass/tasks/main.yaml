@@ -27,9 +27,11 @@
 
 - name: Obtener el estado actual de los StorageClasses del clúster
   ansible.builtin.command: kubectl get storageclass
-  register: kubectl_sc_output
+  register: storageclass_status
+  until: '"leader changed" not in storageclass_status.stderr'
+  retries: 5
+  delay: 5
   changed_when: false
-  when: inventory_hostname == groups['kubernetes_masters'][0]
 
 - name: Mostrar el listado de StorageClasses activos
   ansible.builtin.debug:
