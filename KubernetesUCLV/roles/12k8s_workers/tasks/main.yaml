@@ -2,12 +2,27 @@
 # roles/12k8s_workers/tasks/main.yml
 
 # ==============================================================================
+# 0. LIMPIEZA TOTAL Y RESET DEL ESTADO PREVIO
+# ==============================================================================
+- name: Forzar el reset de kubeadm en el nodo trabajador
+  ansible.builtin.command: kubeadm reset -f
+  register: kubeadm_reset_result
+  changed_when: true
+
+- name: Eliminar directorios de certificados antiguos para evitar conflictos TLS
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/kubernetes/pki
+    - /var/lib/kubelet/pki
+    - /etc/kubernetes/kubelet.conf
+
+# ==============================================================================
 # 1. UNIÓN AL CLÚSTER (Uso de variable en memoria compartida)
 # ==============================================================================
 - name: Unir el nodo trabajador al clúster de Kubernetes
   ansible.builtin.command: "{{ hostvars['k8s_shared']['shared_worker_join_cmd'] }}"
-  args:
-    creates: /etc/kubernetes/kubelet.conf
   register: worker_join_result
 
 # ==============================================================================
